@@ -10,10 +10,10 @@ A single Python script to:
 - Output themed filenames:  
   `<name>_key.key`, `<name>_cert.crt`, `<name>_fullchain.crt`
 - Build proper chains:
-  - Intermediate: `cert + root`
+  - Intermediate: `intermediate + root`
   - Leaf (from intermediate): `leaf + intermediate`
-  - Leaf (from root): `leaf + root`
-  - Self-signed: `leaf` only (fullchain = same as cert)
+  - Leaf (from root): `cert + root`
+  - Self-signed: `cert` only (fullchain = same as cert)
 
 > Uses the excellent [`cryptography`](https://cryptography.io/) library.  
 > Intended for lab/dev/internal usage—**not** a public CA.
