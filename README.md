@@ -10,7 +10,7 @@ A single Python script to:
 - Output themed filenames:  
   `<name>_key.key`, `<name>_cert.crt`, `<name>_fullchain.crt`
 - Build proper chains:
-  - Intermediate: `intermediate + root`
+  - Intermediate: `cert + root`
   - Leaf (from intermediate): `leaf + intermediate`
   - Leaf (from root): `leaf + root`
   - Self-signed: `leaf` only (fullchain = same as cert)
