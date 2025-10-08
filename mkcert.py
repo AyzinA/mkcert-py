@@ -208,7 +208,7 @@ def build_self_signed_leaf(subject_key, subject_name, days, sans, serverauth=Tru
 
 def main():
     p = argparse.ArgumentParser(
-        description="Create a Root CA (if needed) and issue a server or intermediate certificate."
+        description="Create a Root CA (if needed), an Intermediate CA, or issue a server/client certificate."
     )
     p.add_argument("--out", default="certs", help="Output directory (default: certs)")
 
@@ -222,7 +222,7 @@ def main():
     p.add_argument("--force-new-root", action="store_true", help="Overwrite existing root with a new one")
 
     # Issued subject
-    p.add_argument("--cn", required=True, help="End-entity or Intermediate CA Common Name")
+    p.add_argument("--cn", required=False, help="End-entity or Intermediate CA Common Name")
     p.add_argument("--o", help="Organization")
     p.add_argument("--ou", help="Organizational Unit")
     p.add_argument("--c", help="Country (2 letters)")
@@ -246,11 +246,15 @@ def main():
     p.add_argument("--no-serverauth", action="store_true", help="Remove ServerAuth EKU from server cert")
 
     # Issuer selection for leafs
-    p.add_argument("--issuer", choices=["root", "intermediate"], default="root",
-                   help="Who signs non-CA certs (default: root)")
+    p.add_argument("--issuer", choices=["root", "intermediate"], default="intermediate",
+                   help="Who signs non-CA certs (default: intermediate)")
     p.add_argument("--inter-name", default="intermediate",
                    help="Intermediate theme/prefix to load (default: intermediate)")
     p.add_argument("--inter-pass", help="Intermediate key passphrase (if encrypted)")
+
+    # Explicit issuer override (skips root/inter logic)
+    p.add_argument("--issuer-key", help="PEM path to issuer private key (overrides --issuer)")
+    p.add_argument("--issuer-cert", help="PEM path to issuer certificate (overrides --issuer)")
 
     # Optional non-interactive theme
     p.add_argument("--name", help="Theme/basename for output files (skip prompt)")
@@ -260,6 +264,8 @@ def main():
 
     # ---- Self-signed LEAF (no Root CA at all) ----
     if args.self_signed:
+        if not args.cn:
+            raise SystemExit("--cn is required for --self-signed")
         print("[+] Creating a self-signed certificate (no Root CA) ...")
         theme = args.name or input("Enter a name/theme for the self-signed certificate files (default: selfsigned): ").strip() or "selfsigned"
 
@@ -294,94 +300,133 @@ def main():
         print(f"[+] Wrote {issued_chain_path} (self-signed)")
         return
 
-    # ---- Root CA: load or create ----
-    root_key_path = outdir / "root_ca_key.pem"
-    root_crt_path = outdir / "root_ca_cert.pem"
-
-    if root_key_path.exists() and root_crt_path.exists() and not args.force_new_root:
-        print(f"[+] Using existing Root CA: {root_crt_path}")
-        root_pass = args.root_pass
-        if root_pass is None:
-            rp = getpass("Enter Root CA key passphrase (empty if unencrypted): ")
-            root_pass = rp if rp else None
-        with open(root_key_path, "rb") as f:
-            root_key = serialization.load_pem_private_key(
-                f.read(),
-                password=root_pass.encode("utf-8") if root_pass else None
-            )
-        with open(root_crt_path, "rb") as f:
-            root_crt = x509.load_pem_x509_certificate(f.read())
-    else:
-        print("[+] Creating new Root CA ...")
-        default_root_cn = args.root_cn or "Local Dev Root CA"
-        entered_cn = input(f"Root CA Common Name [{default_root_cn}]: ").strip()
-        root_cn = entered_cn or default_root_cn
-
-        root_pass = args.root_pass
-        if root_pass is None:
-            print("(Leave passphrase empty for an unencrypted key)")
-            while True:
-                p1 = getpass("Root CA key passphrase: ")
-                if not p1:
-                    root_pass = None
-                    break
-                p2 = getpass("Confirm passphrase: ")
-                if p1 == p2:
-                    root_pass = p1
-                    break
-                print("Passphrases do not match, try again.")
-
-        root_key = new_private_key(args.root_key_alg, args.root_key_bits)
-        root_subject = subject_from_args(cn=root_cn, o=args.root_o)
-        root_crt = build_self_signed_ca(root_key, root_subject, args.root_days, pathlen=1)
-
-        write_pem(
-            root_key_path,
-            root_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=maybe_encrypt(root_pass),
-            ),
-        )
-        write_pem(root_crt_path, root_crt.public_bytes(serialization.Encoding.PEM))
-        print(f"[+] Wrote {root_key_path}")
-        print(f"[+] Wrote {root_crt_path}")
-
-    # ---- Issue Intermediate or Leaf ----
+    # ---- Decide operation / needs ----
     is_ca = args.intermediate
     default_theme = "intermediate" if is_ca else "server"
-    theme = args.name or input(f"Enter a name/theme for the certificate files (default: {default_theme}): ").strip() or default_theme
+    explicit_issuer = bool(args.issuer_key and args.issuer_cert)
 
+    if not args.cn and not is_ca:
+        raise SystemExit("--cn is required when issuing a leaf (non-CA) certificate")
+
+    # Determine if we need the root at all
+    needs_root = False
+    if not explicit_issuer:
+        if is_ca:
+            # creating intermediate -> needs root
+            needs_root = True
+        else:
+            # leaf
+            needs_root = (args.issuer == "root")
+    # else explicit issuer provided -> no root needed
+
+    # ---- Root CA: load or create (only if needed) ----
+    root_key = None
+    root_crt = None
+    if needs_root:
+        root_key_path = outdir / "root_ca_key.pem"
+        root_crt_path = outdir / "root_ca_cert.pem"
+
+        if root_key_path.exists() and root_crt_path.exists() and not args.force_new_root:
+            print(f"[+] Using existing Root CA: {root_crt_path}")
+            root_pass = args.root_pass
+            if root_pass is None:
+                rp = getpass("Enter Root CA key passphrase (empty if unencrypted): ")
+                root_pass = rp if rp else None
+            with open(root_key_path, "rb") as f:
+                root_key = serialization.load_pem_private_key(
+                    f.read(),
+                    password=root_pass.encode("utf-8") if root_pass else None
+                )
+            with open(root_crt_path, "rb") as f:
+                root_crt = x509.load_pem_x509_certificate(f.read())
+        else:
+            print("[+] Creating new Root CA ...")
+            default_root_cn = args.root_cn or "Local Dev Root CA"
+            entered_cn = input(f"Root CA Common Name [{default_root_cn}]: ").strip()
+            root_cn = entered_cn or default_root_cn
+
+            root_pass = args.root_pass
+            if root_pass is None:
+                print("(Leave passphrase empty for an unencrypted key)")
+                while True:
+                    p1 = getpass("Root CA key passphrase: ")
+                    if not p1:
+                        root_pass = None
+                        break
+                    p2 = getpass("Confirm passphrase: ")
+                    if p1 == p2:
+                        root_pass = p1
+                        break
+                    print("Passphrases do not match, try again.")
+
+            root_key = new_private_key(args.root_key_alg, args.root_key_bits)
+            root_subject = subject_from_args(cn=root_cn, o=args.root_o)
+            root_crt = build_self_signed_ca(root_key, root_subject, args.root_days, pathlen=1)
+
+            write_pem(
+                root_key_path,
+                root_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    encryption_algorithm=maybe_encrypt(root_pass),
+                ),
+            )
+            write_pem(root_crt_path, root_crt.public_bytes(serialization.Encoding.PEM))
+            print(f"[+] Wrote {root_key_path}")
+            print(f"[+] Wrote {root_crt_path}")
+
+    # ---- Issue Intermediate or Leaf ----
+    theme = args.name or input(f"Enter a name/theme for the certificate files (default: {default_theme}): ").strip() or default_theme
     issued_key_path   = outdir / f"{theme}_key.key"
     issued_crt_path   = outdir / f"{theme}_cert.crt"
     issued_chain_path = outdir / f"{theme}_fullchain.crt"
 
     print(f"[+] Creating {'Intermediate CA' if is_ca else 'server certificate'} ...")
     issued_key = new_private_key(args.key_alg, args.key_bits)
-    subject = subject_from_args(cn=args.cn, o=args.o, ou=args.ou, c=args.c, st=args.st, l=args.l)
+    subject = subject_from_args(cn=args.cn if args.cn else "INTERMEDIATE", o=args.o, ou=args.ou, c=args.c, st=args.st, l=args.l)
     sans = parse_sans(args.dns, args.ips) if not is_ca else []
 
-    # Determine issuer
-    issuer_key = root_key
-    issuer_crt = root_crt
-
-    # If leaf and user requested intermediate issuer, load it
-    if not is_ca and args.issuer == "intermediate":
-        inter_prefix = args.inter_name
-        inter_key_path = outdir / f"{inter_prefix}_key.key"
-        inter_crt_path = outdir / f"{inter_prefix}_cert.crt"
-        if not inter_key_path.exists() or not inter_crt_path.exists():
-            raise SystemExit(
-                f"Intermediate not found: {inter_key_path} / {inter_crt_path}\n"
-                f"Create it first with: --intermediate and --name {inter_prefix}"
-            )
-        with open(inter_key_path, "rb") as f:
+    # Decide issuer
+    if explicit_issuer:
+        with open(args.issuer_key, "rb") as f:
             issuer_key = serialization.load_pem_private_key(
                 f.read(),
                 password=args.inter_pass.encode("utf-8") if args.inter_pass else None
             )
-        with open(inter_crt_path, "rb") as f:
+        with open(args.issuer_cert, "rb") as f:
             issuer_crt = x509.load_pem_x509_certificate(f.read())
+
+    elif is_ca:
+        # Intermediate signed by root
+        if root_key is None or root_crt is None:
+            raise SystemExit("Root CA not available to sign the intermediate. Run with proper root parameters.")
+        issuer_key = root_key
+        issuer_crt = root_crt
+
+    else:
+        # Leaf
+        if args.issuer == "root":
+            if root_key is None or root_crt is None:
+                raise SystemExit("Root CA not available to sign the leaf. Use --issuer intermediate or provide --issuer-key/--issuer-cert.")
+            issuer_key = root_key
+            issuer_crt = root_crt
+        else:
+            # issuer == intermediate: load only intermediate; do NOT touch root
+            inter_prefix = args.inter_name
+            inter_key_path = outdir / f"{inter_prefix}_key.key"
+            inter_crt_path = outdir / f"{inter_prefix}_cert.crt"
+            if not inter_key_path.exists() or not inter_crt_path.exists():
+                raise SystemExit(
+                    f"Intermediate not found: {inter_key_path} / {inter_crt_path}\n"
+                    f"Create it first with: --intermediate and --name {inter_prefix}"
+                )
+            with open(inter_key_path, "rb") as f:
+                issuer_key = serialization.load_pem_private_key(
+                    f.read(),
+                    password=args.inter_pass.encode("utf-8") if args.inter_pass else None
+                )
+            with open(inter_crt_path, "rb") as f:
+                issuer_crt = x509.load_pem_x509_certificate(f.read())
 
     cert = build_signed_cert(
         issuer_key=issuer_key,
@@ -408,12 +453,12 @@ def main():
 
     if is_ca:
         # intermediate full chain = intermediate + root
-        chain_bytes = cert.public_bytes(serialization.Encoding.PEM) + root_crt.public_bytes(serialization.Encoding.PEM)
+        chain_bytes = cert.public_bytes(serialization.Encoding.PEM) + (root_crt.public_bytes(serialization.Encoding.PEM) if root_crt else b"")
         chain_note = "cert + root"
     else:
         # leaf full chain
         chain_bytes = cert.public_bytes(serialization.Encoding.PEM) + issuer_crt.public_bytes(serialization.Encoding.PEM)
-        chain_note = "leaf + intermediate" if args.issuer == "intermediate" else "leaf + root"
+        chain_note = "leaf + intermediate" if (explicit_issuer or args.issuer == "intermediate") else "leaf + root"
 
     write_pem(issued_chain_path, chain_bytes)
 
