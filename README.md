@@ -5,7 +5,7 @@ A single Python script to:
 - Create a **Root CA** (with interactive CN + passphrase)
 - Issue an **Intermediate CA**
 - Issue **server/client leaf** certificates
-- Choose the **issuer** for leaf certs (`root` or an existing **intermediate**)
+- Choose the **issuer** for leaf certs (`root`, an existing **intermediate**, or explicit `--issuer-key/--issuer-cert`)
 - Generate **self-signed** leaf certs (no CA)
 - Output themed filenames:  
   `<name>_key.key`, `<name>_cert.crt`, `<name>_fullchain.crt`
@@ -35,12 +35,7 @@ pip install cryptography
 
 ```bash
 # Create root (if missing) and issue a server cert
-python mkcert.py \
-  --out certs \
-  --cn "<Common Name>" \
-  --dns <DOMAIN> \
-  --ips <IP_ADDRESS> \
-  --name n8n
+python mkcert.py   --out certs   --cn "<Common Name>"   --dns <DOMAIN>   --ips <IP_ADDRESS>   --name n8n
 ```
 
 Outputs (in `certs/`):
@@ -57,19 +52,19 @@ n8n_fullchain.crt  # leaf + root
 ### Create Intermediate CA
 
 ```bash
-python mkcert.py --out certs --cn "Intermediate CA" --intermediate --name intermediate
+python mkcert.py --out certs --cn "Intermediate CA" --intermediate --name skynet-inter
 ```
 
-### Issue Leaf from Intermediate
+### Issue Leaf from Intermediate (no root lookup/creation)
 
 ```bash
-python mkcert.py --out certs \
-  --cn "<Common Name>" \
-  --dns <DOMAIN> \
-  --ips <IP_ADDRESS> \
-  --issuer intermediate \
-  --inter-name intermediate \
-  --name n8n
+python mkcert.py --out certs   --cn "n8n.skynet.internal"   --dns n8n.skynet.internal   --issuer intermediate   --inter-name skynet-inter   --name n8n
+```
+
+### Issue Leaf with Explicit Issuer (skip root/inter logic)
+
+```bash
+python mkcert.py --out certs   --cn "svc.example"   --dns svc.example   --issuer-key certs/custom_iss_key.pem   --issuer-cert certs/custom_iss_cert.pem   --name svc
 ```
 
 ### Create Self-Signed Leaf
@@ -83,7 +78,7 @@ python mkcert.py --out certs --cn "local.dev" --dns local.dev --ips 127.0.0.1 --
 ## Verification
 
 ```bash
-openssl verify -CAfile certs/root_ca_cert.pem -untrusted certs/intermediate_cert.crt certs/n8n_cert.crt
+openssl verify -CAfile certs/root_ca_cert.pem -untrusted certs/skynet-inter_cert.crt certs/n8n_cert.crt
 ```
 
 ---
@@ -92,7 +87,7 @@ openssl verify -CAfile certs/root_ca_cert.pem -untrusted certs/intermediate_cert
 
 ```powershell
 Import-Certificate -FilePath ".\certs\root_ca_cert.pem" -CertStoreLocation Cert:\LocalMachine\Root
-Import-Certificate -FilePath ".\certs\intermediate_cert.crt" -CertStoreLocation Cert:\LocalMachine\CA
+Import-Certificate -FilePath ".\certs\skynet-inter_cert.crt" -CertStoreLocation Cert:\LocalMachine\CA
 ```
 
 ---
