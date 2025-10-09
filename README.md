@@ -1,46 +1,28 @@
-# mkcert.py — Simple Local CA & TLS Certificate Generator
+# mkcert.py — Local CA & TLS Certificate Generator
 
-A single self-contained Python script to build and manage your own local certificate authority (CA) and issue TLS certificates for servers, clients, or internal services.
+A single Python script to build and manage your internal PKI hierarchy for secure HTTPS, VPN, and service communication inside your infrastructure.
 
 ---
 
 ## 🧩 Features
 
-- Create a **Root CA** (self-signed) with optional passphrase
-- Issue **Intermediate CAs**
-- Issue **Server / Client certificates**
-- Choose the **issuer** for leaf certs (`root`, an existing `intermediate`, or explicit `--issuer-key`/`--issuer-cert`)
-- Generate **self-signed** leaf certificates (no CA needed)
-- Build proper certificate chains automatically
-- Use modern cryptography (RSA 2048–4096 or EC P-256)
-- All in one Python file — no external tools required
+- Create **Root CA** and **Intermediate CA**
+- Issue **Server**, **Client**, or **Self-signed** certificates
+- Choose **Issuer** (`root`, `intermediate`, or custom via `--issuer-key`/`--issuer-cert`)
+- Build correct certificate chains automatically
+- Works with **RSA** and **ECDSA (P-256)** keys
+- Output themed files: `<name>_key.key`, `<name>_cert.crt`, `<name>_fullchain.crt`
+- Supports **SANs**, **ClientAuth**, and **ServerAuth**
+- Perfect for **homelab**, **AD/ADFS**, **Synology NAS**, **FortiGate**, or **vCenter**
 
-### Output naming convention
-
-Each certificate set uses a common *theme* (or “basename”), producing:
-```
-<name>_key.key       # Private key
-<name>_cert.crt      # Certificate
-<name>_fullchain.crt # Certificate + Issuer chain
-```
-
-### Example chains
-
-| Type | Fullchain Contents |
-|------|--------------------|
-| Intermediate | Intermediate + Root |
-| Leaf (from Intermediate) | Leaf + Intermediate |
-| Leaf (from Root) | Leaf + Root |
-| Self-Signed | Leaf only |
-
-> ⚠️ This tool is for **local development, labs, or internal PKI** only — not for public web certificate issuance.
+> Built with the [`cryptography`](https://cryptography.io/) library — intended for internal/lab use, not public CAs.
 
 ---
 
 ## 🧰 Requirements
 
 - Python **3.9+**
-- [`cryptography`](https://cryptography.io/) library
+- `cryptography` library
 
 ```bash
 pip install cryptography
@@ -50,169 +32,238 @@ pip install cryptography
 
 ## 🚀 Quick Start
 
-Create a **Root CA** (if missing) and issue a **server certificate**:
+Issue a single HTTPS cert (auto-creates CA if missing):
 
 ```bash
-python mkcert.py   --out certs   --cn "example.local"   --dns example.local   --ips 127.0.0.1   --name example
+python mkcert.py --out certs   --cn "example.local"   --dns example.local   --ips 127.0.0.1   --name example
 ```
 
-Outputs (in `certs/`):
+Outputs:
 ```
-example_key.key
-example_cert.crt
-example_fullchain.crt  # leaf + root
+certs/example_key.key
+certs/example_cert.crt
+certs/example_fullchain.crt  # leaf + root
 ```
-
-You can now use `example_fullchain.crt` and `example_key.key` in your web server.
 
 ---
 
 ## 🏗️ Hierarchy Overview
 
-A typical local PKI hierarchy you can build with `mkcert.py`:
-
 ```
 Root CA
  └── Intermediate CA
       ├── webserver.example.local
-      ├── api.internal.lan
-      └── client01.internal.lan
+      ├── vcenter.example.local
+      ├── fortigate.internal
+      └── nas.internal
 ```
 
 ---
 
-## 🔧 Usage Examples
+## 🔧 Common Usage
 
-### 1. Create a Root CA
-
-```bash
-python mkcert.py --out certs --intermediate --force-new-root --cn "Local Root CA"
-```
-This generates:
-```
-certs/root_ca_key.pem
-certs/root_ca_cert.pem
-```
-
-### 2. Create an Intermediate CA (signed by Root)
+### Create Intermediate CA
 
 ```bash
-python mkcert.py --out certs   --intermediate   --cn "Local Intermediate CA"   --name intermediate
+python mkcert.py --out certs --intermediate --cn "Internal Intermediate CA" --name intermediate
 ```
 
-Outputs:
-```
-intermediate_key.key
-intermediate_cert.crt
-intermediate_fullchain.crt  # intermediate + root
-```
-
-### 3. Issue a Server Certificate (signed by Intermediate)
+### Issue Leaf Certificate (Signed by Intermediate)
 
 ```bash
-python mkcert.py --out certs   --cn "example.local"   --dns example.local   --ips 127.0.0.1   --issuer intermediate   --inter-name intermediate   --name example
+python mkcert.py --out certs   --cn "webserver.internal"   --dns webserver.internal   --ips 192.168.1.10   --issuer intermediate   --inter-name intermediate   --name webserver
 ```
 
-Outputs:
-```
-example_key.key
-example_cert.crt
-example_fullchain.crt  # leaf + intermediate
-```
-
-### 4. Issue a Certificate Directly from Root
-
-```bash
-python mkcert.py --out certs   --cn "direct.local"   --dns direct.local   --issuer root   --name direct
-```
-
-### 5. Issue a Certificate with Explicit Issuer (Custom Chain)
-
-You can bypass all CA lookup logic and provide any issuer directly:
-
-```bash
-python mkcert.py --out certs   --cn "custom.local"   --dns custom.local   --issuer-key certs/intermediate_key.key   --issuer-cert certs/intermediate_cert.crt   --name custom
-```
-
-### 6. Generate a Self-Signed Certificate
+### Self-signed (No CA)
 
 ```bash
 python mkcert.py --out certs   --cn "standalone.local"   --dns standalone.local   --ips 127.0.0.1   --self-signed   --name standalone
 ```
 
-Outputs:
+---
+
+## 🖥️ vCenter Integration
+
+**Goal:** Replace the default machine SSL certificate in VMware vCenter (VAMI).
+
+1. Generate the certificate:
+
+```bash
+python mkcert.py --out certs   --cn "vcenter.internal"   --dns vcenter.internal vcenter   --ips 192.168.10.5   --issuer intermediate   --inter-name intermediate   --name vcenter
 ```
-standalone_key.key
-standalone_cert.crt
-standalone_fullchain.crt  # identical to cert
+
+2. Combine chain:
+```bash
+cat certs/intermediate_cert.crt certs/root_ca_cert.pem > certs/root_chain.crt
+```
+
+3. Upload to VAMI (https://vcenter.internal:5480):
+   - Certificate: `vcenter_cert.crt`
+   - Private Key: `vcenter_key.key`
+   - Chain: `root_chain.crt`
+
+4. Reboot appliance and verify via:
+```bash
+openssl s_client -connect vcenter.internal:443 -showcerts
 ```
 
 ---
 
-## 🔍 Verification
+## 🔒 FortiGate Integration
 
-Verify a certificate chain using `openssl`:
+**Goal:** Replace FortiGate GUI/SSL-VPN cert with your internal CA-signed one.
+
+1. Generate the certificate:
 
 ```bash
-# Leaf signed by intermediate
+python mkcert.py --out certs   --cn "fortigate.internal"   --dns fortigate.internal fw01   --ips 192.168.1.1   --issuer intermediate   --inter-name intermediate   --name fortigate
+```
+
+2. Create chain:
+```bash
+cat certs/intermediate_cert.crt certs/root_ca_cert.pem > certs/root_chain.crt
+```
+
+3. Convert to PKCS#12 if needed:
+```bash
+openssl pkcs12 -export   -inkey certs/fortigate_key.key   -in certs/fortigate_cert.crt   -certfile certs/root_chain.crt   -out certs/fortigate.p12   -name "fortigate.internal"
+```
+
+4. Import in FortiGate:
+   - **GUI:** System → Certificates → Import → Local Certificate  
+     Upload `fortigate_cert.crt`, `fortigate_key.key`, and `root_chain.crt`
+   - **CLI (optional):**
+     ```bash
+     execute vpn certificate local import p12 FortiGate-SSL fortigate.p12 <password>
+     config system global
+         set admin-server-cert "FortiGate-SSL"
+     end
+     config vpn ssl settings
+         set servercert "FortiGate-SSL"
+     end
+     ```
+
+5. Reboot or restart HTTPS admin service.
+
+---
+
+## 🗄️ Synology NAS Integration
+
+**Goal:** Use your internal CA for DSM’s HTTPS and services.
+
+1. Generate NAS certificate:
+
+```bash
+python mkcert.py --out certs   --cn "nas.internal"   --dns nas.internal nas.local   --ips 10.0.1.6   --issuer intermediate   --inter-name intermediate   --name synology
+```
+
+2. Build chain:
+```bash
+cat certs/intermediate_cert.crt certs/root_ca_cert.pem > certs/root_chain.crt
+```
+
+3. In DSM:
+   - **Control Panel → Security → Certificate → Add → Import**
+   - Upload:
+     - Certificate → `synology_cert.crt`
+     - Private key → `synology_key.key`
+     - Intermediate cert → `root_chain.crt`
+   - Set as **Default Certificate**
+
+4. Verify via browser or:
+```bash
+openssl s_client -connect nas.internal:5001 -showcerts
+```
+
+---
+
+## 🧠 Active Directory (AD) Integration
+
+**Goal:** Automatically distribute trust for your internal CA across the domain.
+
+1. Copy your CA certs to a Domain Controller:
+   ```powershell
+   C:\CA\root_ca_cert.pem
+   C:\CA\intermediate_cert.crt
+   ```
+
+2. Publish Root CA:
+   ```powershell
+   certutil -dspublish -f C:\CA\root_ca_cert.pem RootCA
+   ```
+
+3. Publish Intermediate CA:
+   ```powershell
+   certutil -dspublish -f C:\CA\intermediate_cert.crt SubCA
+   ```
+
+4. Verify:
+   ```powershell
+   certutil -viewstore -enterprise Root
+   certutil -viewstore -enterprise CA
+   ```
+
+5. Update Group Policy on clients:
+   ```powershell
+   gpupdate /force
+   ```
+
+All domain-joined systems now trust your internal CA automatically.
+
+---
+
+## 🪪 Active Directory Federation Services (AD FS)
+
+**Goal:** Replace AD FS HTTPS (Service Communications) certificate with one signed by your CA.
+
+1. Generate ADFS cert:
+   ```bash
+   python mkcert.py --out certs      --cn "adfs.domain.local"      --dns adfs.domain.local adfs      --ips 10.0.1.20      --issuer intermediate      --inter-name intermediate      --name adfs
+   ```
+
+2. Export as PFX:
+   ```bash
+   openssl pkcs12 -export      -inkey certs/adfs_key.key      -in certs/adfs_cert.crt      -certfile certs/intermediate_cert.crt      -out certs/adfs.pfx      -name "adfs.domain.local"
+   ```
+
+3. Import to Windows Store:
+   ```powershell
+   Import-PfxCertificate -FilePath C:\certs\adfs.pfx -CertStoreLocation Cert:\LocalMachine\My
+   ```
+
+4. Assign to AD FS:
+   ```powershell
+   Set-AdfsSslCertificate -Thumbprint "<thumbprint>"
+   Restart-Service adfssrv
+   ```
+
+5. Test:
+   Visit `https://adfs.domain.local/adfs/ls/idpinitiatedsignon.aspx`  
+   → should show a valid trusted certificate chain.
+
+---
+
+## 🧾 Verification Commands
+
+```bash
 openssl verify -CAfile certs/root_ca_cert.pem -untrusted certs/intermediate_cert.crt certs/example_cert.crt
+openssl s_client -connect example.local:443 -showcerts
 ```
 
 ---
 
-## 🖥️ Trust Installation
+## 🖥️ Trust Distribution (Manual)
 
-### On Linux (system-wide)
-```bash
-sudo cp certs/root_ca_cert.pem /usr/local/share/ca-certificates/root_ca.crt
-sudo update-ca-certificates
-```
-
-### On macOS
-```bash
-sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain certs/root_ca_cert.pem
-```
-
-### On Windows PowerShell
-```powershell
-Import-Certificate -FilePath ".\certs\root_ca_cert.pem" -CertStoreLocation Cert:\LocalMachine\Root
-Import-Certificate -FilePath ".\certs\intermediate_cert.crt" -CertStoreLocation Cert:\LocalMachine\CA
-```
-
----
-
-## 🌐 Using with NGINX
-
-Example server block:
-
-```nginx
-server {
-    listen 443 ssl http2;
-    server_name example.local;
-
-    ssl_certificate     /etc/ssl/example_fullchain.crt;
-    ssl_certificate_key /etc/ssl/example_key.key;
-
-    root /var/www/html;
-}
-```
-
----
-
-## 🧠 Tips & Advanced Options
-
-- `--key-alg ec` uses Elliptic Curve (P-256) instead of RSA
-- `--key-bits 4096` increases RSA strength (default 2048)
-- `--key-pass mypass` encrypts private key with a password
-- `--clientauth` adds the *Client Authentication* EKU for mTLS
-- `--no-serverauth` removes the *Server Authentication* EKU
-- `--days <n>` changes certificate validity period (default 825 days)
-- `--force-new-root` recreates the root CA even if one already exists
+| OS | How to trust Root CA |
+|----|----------------------|
+| **Windows** | Import Root CA into “Trusted Root Certification Authorities” via `certmgr.msc` |
+| **Linux** | `sudo cp root_ca_cert.pem /usr/local/share/ca-certificates/root.crt && sudo update-ca-certificates` |
+| **macOS** | `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain root_ca_cert.pem` |
+| **Firefox** | Preferences → Privacy & Security → Certificates → View → Authorities → Import |
 
 ---
 
 ## 🧾 License
 
 **MIT License** — free for personal and commercial use.  
-Authored for developers, sysadmins, and homelab enthusiasts.
-
+Created for sysadmins, DevOps, and homelab builders who want full control of their PKI.
