@@ -55,7 +55,10 @@ Root CA
       ├── webserver.example.local
       ├── vcenter.example.local
       ├── fortigate.internal
-      └── nas.internal
+      ├── nas.internal
+      ├── ad.domain.local
+      ├── adfs.domain.local
+      └── dc1.domain.local
 ```
 
 ---
