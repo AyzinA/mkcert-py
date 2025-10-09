@@ -252,6 +252,45 @@ openssl s_client -connect example.local:443 -showcerts
 
 ---
 
+## 🧠 Active Directory LDAPS Integration
+
+**Goal:** Secure LDAP (LDAPS on port 636) using your internal CA.
+
+1. Generate Domain Controller certificate:
+   ```bash
+   python mkcert.py --out certs      --cn "dc1.domain.local"      --dns dc1.domain.local dc1      --issuer intermediate      --inter-name intermediate      --name dc1-ldaps
+   ```
+
+2. Export as PFX:
+   ```bash
+   openssl pkcs12 -export      -inkey certs/dc1-ldaps_key.key      -in certs/dc1-ldaps_cert.crt      -certfile certs/intermediate_cert.crt      -out certs/dc1-ldaps.pfx      -name "dc1.domain.local"
+   ```
+
+3. Import on the Domain Controller:
+   ```powershell
+   Import-PfxCertificate -FilePath C:\certs\dc1-ldaps.pfx -CertStoreLocation Cert:\LocalMachine\My
+   ```
+
+4. Restart AD DS:
+   ```powershell
+   Restart-Service NTDS
+   ```
+
+5. Test LDAPS:
+   ```bash
+   openssl s_client -connect dc1.domain.local:636 -showcerts
+   ```
+
+Expected output:
+```
+subject=CN = dc1.domain.local
+issuer=CN = Internal CA
+```
+
+✅ Once your CA is trusted (automatically via AD GPO), LDAPS connections are secure.
+
+---
+
 ## 🖥️ Trust Distribution (Manual)
 
 | OS | How to trust Root CA |
