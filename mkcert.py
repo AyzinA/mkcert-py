@@ -10,7 +10,11 @@ from pathlib import Path
 from getpass import getpass
 
 from cryptography import x509
-from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
+from cryptography.x509.oid import (
+    NameOID,
+    ExtendedKeyUsageOID,
+    AuthorityInformationAccessOID,
+)
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from cryptography.hazmat.primitives.serialization import BestAvailableEncryption, NoEncryption
@@ -67,10 +71,42 @@ def subject_from_args(cn, o=None, ou=None, c=None, st=None, l=None):
 def sane_serial():
     return x509.random_serial_number()
 
+def cdp_aia_extensions(cdp_url: str | None, ocsp_url: str | None) -> list[tuple[x509.ExtensionType, bool]]:
+    """
+    Build optional revocation-related extensions:
+      - CRLDistributionPoints (CDP) -> non-critical
+      - AuthorityInformationAccess (OCSP only) -> non-critical
+    Returns a list of (extension, critical_flag) tuples.
+    """
+    exts: list[tuple[x509.ExtensionType, bool]] = []
+
+    if cdp_url:
+        dp = x509.DistributionPoint(
+            full_name=[x509.UniformResourceIdentifier(cdp_url)],
+            relative_name=None,
+            reasons=None,
+            crl_issuer=None,
+        )
+        exts.append((x509.CRLDistributionPoints([dp]), False))
+
+    if ocsp_url:
+        aia = x509.AuthorityInformationAccess([
+            x509.AccessDescription(
+                AuthorityInformationAccessOID.OCSP,
+                x509.UniformResourceIdentifier(ocsp_url),
+            )
+            # Note: We are not adding caIssuers here because we don't have a URL for issuer cert download.
+            # You can extend this to include one if you host your issuer certs.
+        ])
+        exts.append((aia, False))
+
+    return exts
+
 
 # ---------- Builders ----------
 
-def build_self_signed_ca(ca_key, subject: x509.Name, days: int, pathlen: int | None):
+def build_self_signed_ca(ca_key, subject: x509.Name, days: int, pathlen: int | None,
+                         cdp_url: str | None, ocsp_url: str | None):
     now = datetime.now(timezone.utc)
     builder = (
         x509.CertificateBuilder()
@@ -97,10 +133,25 @@ def build_self_signed_ca(ca_key, subject: x509.Name, days: int, pathlen: int | N
         )
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
     )
+
+    # Optional CDP/AIA
+    for ext, critical in cdp_aia_extensions(cdp_url, ocsp_url):
+        builder = builder.add_extension(ext, critical=critical)
+
     return builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
 
 def build_signed_cert(
-    issuer_key, issuer_cert, subject_key, subject_name, days, is_ca, sans, serverauth=True, clientauth=False
+    issuer_key,
+    issuer_cert,
+    subject_key,
+    subject_name,
+    days,
+    is_ca,
+    sans,
+    serverauth=True,
+    clientauth=False,
+    cdp_url: str | None = None,
+    ocsp_url: str | None = None,
 ):
     now = datetime.utcnow()
     builder = (
@@ -159,9 +210,14 @@ def build_signed_cert(
         if sans:
             builder = builder.add_extension(x509.SubjectAlternativeName(sans), critical=False)
 
+    # Optional CDP/AIA
+    for ext, critical in cdp_aia_extensions(cdp_url, ocsp_url):
+        builder = builder.add_extension(ext, critical=critical)
+
     return builder.sign(private_key=issuer_key, algorithm=hashes.SHA256())
 
-def build_self_signed_leaf(subject_key, subject_name, days, sans, serverauth=True, clientauth=False):
+def build_self_signed_leaf(subject_key, subject_name, days, sans, serverauth=True, clientauth=False,
+                           cdp_url: str | None = None, ocsp_url: str | None = None):
     """Self-signed end-entity (not a CA)."""
     now = datetime.utcnow()
     builder = (
@@ -200,6 +256,10 @@ def build_self_signed_leaf(subject_key, subject_name, days, sans, serverauth=Tru
         builder = builder.add_extension(x509.ExtendedKeyUsage(eku), critical=False)
     if sans:
         builder = builder.add_extension(x509.SubjectAlternativeName(sans), critical=False)
+
+    # Optional CDP/AIA
+    for ext, critical in cdp_aia_extensions(cdp_url, ocsp_url):
+        builder = builder.add_extension(ext, critical=critical)
 
     return builder.sign(private_key=subject_key, algorithm=hashes.SHA256())
 
@@ -256,6 +316,10 @@ def main():
     p.add_argument("--issuer-key", help="PEM path to issuer private key (overrides --issuer)")
     p.add_argument("--issuer-cert", help="PEM path to issuer certificate (overrides --issuer)")
 
+    # Revocation endpoints (NEW)
+    p.add_argument("--cdp-url", help="CRL Distribution Point URL to embed in certificates (e.g. http://pki.example/crl/intermediate.crl)")
+    p.add_argument("--ocsp-url", help="OCSP responder URL to embed in certificates (e.g. http://pki.example/ocsp)")
+
     # Optional non-interactive theme
     p.add_argument("--name", help="Theme/basename for output files (skip prompt)")
 
@@ -283,6 +347,8 @@ def main():
             sans=sans,
             serverauth=not args.no_serverauth,
             clientauth=args.clientauth,
+            cdp_url=args.cdp_url,
+            ocsp_url=args.ocsp_url,
         )
 
         write_pem(
@@ -361,7 +427,8 @@ def main():
 
             root_key = new_private_key(args.root_key_alg, args.root_key_bits)
             root_subject = subject_from_args(cn=root_cn, o=args.root_o)
-            root_crt = build_self_signed_ca(root_key, root_subject, args.root_days, pathlen=1)
+            root_crt = build_self_signed_ca(root_key, root_subject, args.root_days, pathlen=1,
+                                            cdp_url=args.cdp_url, ocsp_url=args.ocsp_url)
 
             write_pem(
                 root_key_path,
@@ -438,6 +505,8 @@ def main():
         sans=sans,
         serverauth=not args.no_serverauth,
         clientauth=args.clientauth,
+        cdp_url=args.cdp_url,
+        ocsp_url=args.ocsp_url,
     )
 
     # Write outputs
