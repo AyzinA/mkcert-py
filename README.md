@@ -13,7 +13,8 @@ A single Python script to build and manage your internal PKI hierarchy for secur
 - Works with **RSA** and **ECDSA (P-256)** keys
 - Output themed files: `<name>_key.key`, `<name>_cert.crt`, `<name>_fullchain.crt`
 - Supports **SANs**, **ClientAuth**, and **ServerAuth**
-- Perfect for **homelab**, **AD/ADFS**, **Synology NAS**, **FortiGate**, or **vCenter**
+- Supports **CRL Distribution Points (CDP)** and **OCSP URLs**
+- Perfect for **homelab**, **AD/ADFS**, **Synology NAS**, **FortiGate**, **vCenter**, and **Vault**
 
 > Built with the [`cryptography`](https://cryptography.io/) library — intended for internal/lab use, not public CAs.
 
@@ -35,7 +36,7 @@ pip install cryptography
 Issue a single HTTPS cert (auto-creates CA if missing):
 
 ```bash
-python mkcert.py --out certs   --cn "example.local"   --dns example.local   --ips 127.0.0.1   --name example
+python mkcert.py --out certs --cn "example.local" --dns example.local --ips 127.0.0.1 --name example
 ```
 
 Outputs:
@@ -74,14 +75,27 @@ python mkcert.py --out certs --intermediate --cn "Internal Intermediate CA" --na
 ### Issue Leaf Certificate (Signed by Intermediate)
 
 ```bash
-python mkcert.py --out certs   --cn "webserver.internal"   --dns webserver.internal   --ips 192.168.1.10   --issuer intermediate   --inter-name intermediate   --name webserver
+python mkcert.py --out certs --cn "webserver.internal" --dns webserver.internal --ips 192.168.1.10 --issuer intermediate --inter-name intermediate --name webserver
 ```
 
 ### Self-signed (No CA)
 
 ```bash
-python mkcert.py --out certs   --cn "standalone.local"   --dns standalone.local   --ips 127.0.0.1   --self-signed   --name standalone
+python mkcert.py --out certs --cn "standalone.local" --dns standalone.local --ips 127.0.0.1 --self-signed --name standalone
 ```
+
+### Issue Certificate with CRL and OCSP URLs
+
+```bash
+python mkcert.py --out certs --cn "api.internal.local" --dns api.internal.local --ips 10.10.10.5 --issuer intermediate --inter-name internal --cdp-url "http://pki.internal.local/crl/intermediate.crl" --ocsp-url "http://pki.internal.local:2560"
+```
+
+Example for enterprise-style usage:
+```bash
+python mkcert.py --out certs --cn "test.example.internal" --dns test.example.internal --ips 172.16.0.15 --issuer intermediate --inter-name internal --cdp-url "http://pki.example.internal/crl/intermediate.crl" --ocsp-url "http://pki.example.internal:2560"
+```
+
+This adds **CDP** and **OCSP** URLs to your certificates, allowing enterprise clients to validate revocation via HTTP.
 
 ---
 
@@ -92,7 +106,7 @@ python mkcert.py --out certs   --cn "standalone.local"   --dns standalone.local 
 1. Generate the certificate:
 
 ```bash
-python mkcert.py --out certs   --cn "vcenter.internal"   --dns vcenter.internal vcenter   --ips 192.168.10.5   --issuer intermediate   --inter-name intermediate   --name vcenter
+python mkcert.py --out certs --cn "vcenter.internal" --dns vcenter.internal --ips 192.168.10.5 --issuer intermediate --inter-name intermediate --name vcenter
 ```
 
 2. Combine chain:
@@ -119,7 +133,7 @@ openssl s_client -connect vcenter.internal:443 -showcerts
 1. Generate the certificate:
 
 ```bash
-python mkcert.py --out certs   --cn "fortigate.internal"   --dns fortigate.internal fw01   --ips 192.168.1.1   --issuer intermediate   --inter-name intermediate   --name fortigate
+python mkcert.py --out certs --cn "fortigate.internal" --dns fortigate.internal --ips 192.168.1.1 --issuer intermediate --inter-name intermediate --name fortigate
 ```
 
 2. Create chain:
@@ -129,7 +143,7 @@ cat certs/intermediate_cert.crt certs/root_ca_cert.pem > certs/root_chain.crt
 
 3. Convert to PKCS#12 if needed:
 ```bash
-openssl pkcs12 -export   -inkey certs/fortigate_key.key   -in certs/fortigate_cert.crt   -certfile certs/root_chain.crt   -out certs/fortigate.p12   -name "fortigate.internal"
+openssl pkcs12 -export -inkey certs/fortigate_key.key -in certs/fortigate_cert.crt -certfile certs/root_chain.crt -out certs/fortigate.p12 -name "fortigate.internal"
 ```
 
 4. Import in FortiGate:
@@ -157,7 +171,7 @@ openssl pkcs12 -export   -inkey certs/fortigate_key.key   -in certs/fortigate_ce
 1. Generate NAS certificate:
 
 ```bash
-python mkcert.py --out certs   --cn "nas.internal"   --dns nas.internal nas.local   --ips 10.0.1.6   --issuer intermediate   --inter-name intermediate   --name synology
+python mkcert.py --out certs --cn "nas.internal" --dns nas.internal --ips 10.0.1.6 --issuer intermediate --inter-name intermediate --name synology
 ```
 
 2. Build chain:
@@ -221,12 +235,12 @@ All domain-joined systems now trust your internal CA automatically.
 
 1. Generate ADFS cert:
    ```bash
-   python mkcert.py --out certs      --cn "adfs.domain.local"      --dns adfs.domain.local adfs      --ips 10.0.1.20      --issuer intermediate      --inter-name intermediate      --name adfs
+   python mkcert.py --out certs --cn "adfs.domain.local" --dns adfs.domain.local adfs --ips 10.0.1.20 --issuer intermediate --inter-name intermediate --name adfs
    ```
 
 2. Export as PFX:
    ```bash
-   openssl pkcs12 -export      -inkey certs/adfs_key.key      -in certs/adfs_cert.crt      -certfile certs/intermediate_cert.crt      -out certs/adfs.pfx      -name "adfs.domain.local"
+   openssl pkcs12 -export -inkey certs/adfs_key.key -in certs/adfs_cert.crt -certfile certs/intermediate_cert.crt -out certs/adfs.pfx -name "adfs.domain.local"
    ```
 
 3. Import to Windows Store:
@@ -261,12 +275,12 @@ openssl s_client -connect example.local:443 -showcerts
 
 1. Generate Domain Controller certificate:
    ```bash
-   python mkcert.py --out certs      --cn "dc1.domain.local"      --dns dc1.domain.local dc1      --issuer intermediate      --inter-name intermediate      --name dc1-ldaps
+   python mkcert.py --out certs --cn "dc1.domain.local" --dns dc1.domain.local dc1 --issuer intermediate --inter-name intermediate --name dc1-ldaps
    ```
 
 2. Export as PFX:
    ```bash
-   openssl pkcs12 -export      -inkey certs/dc1-ldaps_key.key      -in certs/dc1-ldaps_cert.crt      -certfile certs/intermediate_cert.crt      -out certs/dc1-ldaps.pfx      -name "dc1.domain.local"
+   openssl pkcs12 -export -inkey certs/dc1-ldaps_key.key -in certs/dc1-ldaps_cert.crt -certfile certs/intermediate_cert.crt -out certs/dc1-ldaps.pfx -name "dc1.domain.local"
    ```
 
 3. Import on the Domain Controller:
